@@ -1,0 +1,72 @@
+FROM python:3.14-slim-bookworm
+
+ARG UID
+ARG GID
+ENV UID=${UID}
+ENV GID=${GID}
+ARG USER
+ARG GROUP
+ENV USER=${USER}
+ENV GROUP=${GROUP}
+
+# Install main packages and clean up cache to save space
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  curl \
+  wget \
+  openssl \
+  nginx \
+  zip \
+  nano \
+  git \
+  # ffmpeg \
+  musl-dev \
+  libva-dev \
+  libffi-dev \
+  libssl-dev \
+  build-essential \
+  supervisor \
+  # Python
+  tzdata \
+  python3 \
+  python3-pip \
+  python3-venv \
+  && rm -rf /var/lib/apt/lists/*
+
+# Create user and group using native Debian shadow-utils syntax
+RUN groupadd -g ${GID} ${GROUP} \
+    && useradd -u ${UID} -m -d /home/${USER} -s /bin/bash -g ${GROUP} ${USER} \
+    && chmod u+s /bin/su \
+    && echo "${USER} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Configure NGINX and remove created its default html directory
+COPY config/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY config/nginx/conf.d /etc/nginx/conf.d/
+
+# Configure Supervisord
+COPY config/supervisor/supervisord.conf /etc/supervisor/supervisord.conf
+COPY config/supervisor/conf.d/. /etc/supervisor/conf.d/
+# Fix Supervisor runtime directories so they don't crash under a non-root user
+RUN mkdir -p /var/log/supervisor /var/run/supervisor \
+    && chown -R ${USER}:${GROUP} /var/log/supervisor /var/run/supervisor
+
+# Create project root and set it as work directory
+RUN mkdir -p /var/www
+WORKDIR /var/www
+
+# Add application from docker-compose.yml -> volumes: source
+COPY --chown=${USER}:${GROUP} ../ /var/www
+
+# Remove unused directories
+RUN rm -rf /var/www/html /var/www/localhost
+
+# Make sure files/folders needed by the processes are accessable when they run under the nobody user
+RUN chown -R ${USER}:${GROUP} /var/www /run /var/lib/nginx /var/log/nginx
+
+# Switch to use a non-root user from here on
+USER ${USER}
+
+# NGINX: 80 - PYTHON: 8080
+EXPOSE 80 8080
+
+# Let supervisord start nginx & python
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
